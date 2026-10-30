@@ -56,9 +56,9 @@ BarWidget {
 
   readonly property string tooltip: {
     if (fileState === "missing")
-      return "Peripheral battery: service not installed.\nRun: sudo ~/.config/omarchy/plugins/gexavi.peripheral-battery/service/install.sh"
+      return "Wireless Peripheral Battery: service not installed.\nRun: sudo ~/.config/omarchy/plugins/gexavi.peripheral-battery/service/install.sh"
     if (fileState === "invalid")
-      return "Peripheral battery: unreadable " + statusPath
+      return "Wireless Peripheral Battery: unreadable " + statusPath
 
     var lines = []
     for (var i = 0; i < devices.length; i++) {

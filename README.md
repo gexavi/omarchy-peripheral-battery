@@ -1,4 +1,4 @@
-# Peripheral Battery
+# Wireless Peripheral Battery
 
 An Omarchy bar widget that shows the battery level of your wireless mouse,
 keyboard and headset, without Solaar or HeadsetControl.

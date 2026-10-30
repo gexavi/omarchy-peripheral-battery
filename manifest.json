@@ -1,8 +1,8 @@
 {
   "schemaVersion": 1,
   "id": "gexavi.peripheral-battery",
-  "name": "Peripheral battery",
-  "version": "1.2.0",
+  "name": "Wireless Peripheral Battery",
+  "version": "1.2.1",
   "author": "gexavi",
   "license": "MIT",
   "homepage": "https://github.com/gexavi/omarchy-peripheral-battery",
@@ -14,7 +14,7 @@
     "barWidget": "BarWidget.qml"
   },
   "barWidget": {
-    "displayName": "Peripheral battery",
+    "displayName": "Wireless Peripheral Battery",
     "description": "Mouse, keyboard and headset battery percentages. Hover for details. Requires the bundled service: sudo service/install.sh",
     "category": "Hardware",
     "defaultSection": "right",
