@@ -1,0 +1,52 @@
+[Unit]
+Description=Read wireless peripheral battery levels for the Omarchy bar
+Documentation=https://github.com/gexavi/omarchy-peripheral-battery
+
+[Service]
+Type=oneshot
+ExecStart=/usr/bin/python3 -I -B /usr/local/lib/peripheral-battery/peripheral-battery
+
+# Output: /run/peripheral-battery/status.json, world-readable, kept between runs.
+RuntimeDirectory=peripheral-battery
+RuntimeDirectoryMode=0755
+RuntimeDirectoryPreserve=yes
+UMask=0022
+
+# Runs as root only so that /dev/hidraw* (root:root 0600) can be opened.
+# Every capability is dropped: root without capabilities cannot bypass file
+# permissions, load modules, change the network, and so on.
+CapabilityBoundingSet=
+AmbientCapabilities=
+NoNewPrivileges=yes
+
+# Devices: hidraw only (plus the harmless pseudo devices such as /dev/null).
+DevicePolicy=closed
+DeviceAllow=char-hidraw rw
+
+# Filesystem: everything read-only except the runtime directory above.
+ProtectSystem=strict
+ProtectHome=yes
+PrivateTmp=yes
+ProtectKernelTunables=yes
+ProtectKernelModules=yes
+ProtectKernelLogs=yes
+ProtectControlGroups=yes
+ProtectClock=yes
+ProtectHostname=yes
+ProtectProc=invisible
+
+# No network at all.
+PrivateNetwork=yes
+IPAddressDeny=any
+RestrictAddressFamilies=AF_UNIX
+
+# Misc hardening.
+LockPersonality=yes
+MemoryDenyWriteExecute=yes
+RestrictNamespaces=yes
+RestrictRealtime=yes
+RestrictSUIDSGID=yes
+SystemCallArchitectures=native
+SystemCallFilter=@system-service
+SystemCallFilter=~@privileged @resources
+TimeoutStartSec=30

@@ -1,0 +1,10 @@
+[Unit]
+Description=Refresh wireless peripheral battery levels every 2 minutes
+
+[Timer]
+OnBootSec=20s
+OnUnitActiveSec=2min
+AccuracySec=10s
+
+[Install]
+WantedBy=timers.target

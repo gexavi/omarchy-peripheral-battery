@@ -1,0 +1,23 @@
+{
+  "schemaVersion": 1,
+  "id": "gexavi.peripheral-battery",
+  "name": "Peripheral battery",
+  "version": "1.0.0",
+  "author": "gexavi",
+  "license": "MIT",
+  "homepage": "https://github.com/gexavi/omarchy-peripheral-battery",
+  "description": "Battery levels of wireless Logitech (HID++) devices and the SteelSeries Arctis 7, read by a small sandboxed system service. No Solaar or headsetcontrol needed.",
+  "kinds": [
+    "bar-widget"
+  ],
+  "entryPoints": {
+    "barWidget": "BarWidget.qml"
+  },
+  "barWidget": {
+    "displayName": "Peripheral battery",
+    "description": "Mouse, keyboard and headset battery percentages. Hover for details. Requires the bundled service: sudo service/install.sh",
+    "category": "Hardware",
+    "defaultSection": "right",
+    "allowMultiple": false
+  }
+}
