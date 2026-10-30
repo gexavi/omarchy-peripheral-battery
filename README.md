@@ -14,6 +14,21 @@ keyboard and headset, without Solaar or HeadsetControl.
 - Devices that are asleep or switched off are **dimmed** and keep their last
   reading for up to 12 hours instead of disappearing from the bar.
 
+## Why another battery plugin?
+
+Most battery widgets for Omarchy read from **UPower**. That works for many
+Bluetooth devices, but UPower only knows what the kernel reports, and several
+common wireless devices are missing there. On the development machine, UPower
+listed the G502 mouse but neither the G915 TKL keyboard (on its own Lightspeed
+receiver) nor the Arctis 7 headset.
+
+The usual fix is to install Solaar and HeadsetControl, which give your user
+account raw access to the devices (see [why that matters](#why-a-root-service)).
+
+This plugin reads the devices directly and covers those gaps. It needs no extra
+package, and all your session receives is the percentages. If UPower already
+shows all your devices, a UPower-based widget is simpler and needs no setup.
+
 ## How it works
 
 ```
