@@ -21,7 +21,7 @@ import struct
 import sys
 import time
 
-VERSION = "1.0.0"
+VERSION = "1.0.1"
 DEFAULT_OUTPUT = "/run/peripheral-battery/status.json"
 # Devices that stop answering (asleep, switched off) keep their last reading
 # in the output, flagged offline, until they have been silent this long.
@@ -291,8 +291,11 @@ def scan_arctis(node):
     if reply is None:
         return []
     level = reply[2]
-    if level > 100:
-        return []  # headset switched off: the dongle reports no valid level
+    # With the headset switched off the dongle still answers, with an
+    # otherwise identical reply and a level of 0. A real 0 % cannot be read
+    # either, since the headset shuts down before that.
+    if level == 0 or level > 100:
+        return []
     return [{
         "key": f"arctis:{node.pid:04x}",
         "name": name,
