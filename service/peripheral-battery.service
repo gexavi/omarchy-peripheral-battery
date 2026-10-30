@@ -50,3 +50,9 @@ SystemCallArchitectures=native
 SystemCallFilter=@system-service
 SystemCallFilter=~@privileged @resources
 TimeoutStartSec=30
+
+# A run every 30 seconds would add three routine lines ("Starting",
+# "Deactivated", "Finished") to the journal each time. Keep only notices and
+# above, and log the script's own error output as warnings so it still shows.
+LogLevelMax=notice
+SyslogLevel=warning

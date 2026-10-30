@@ -1,10 +1,13 @@
 [Unit]
-Description=Refresh wireless peripheral battery levels every 2 minutes
+Description=Refresh wireless peripheral battery levels every 30 seconds
+Documentation=https://github.com/gexavi/omarchy-peripheral-battery#refresh-interval
 
 [Timer]
 OnBootSec=20s
-OnUnitActiveSec=2min
-AccuracySec=10s
+# To change the interval, use a drop-in rather than editing this file
+# (see the README, "Refresh interval"), so that install.sh keeps your choice.
+OnUnitActiveSec=30s
+AccuracySec=1s
 
 [Install]
 WantedBy=timers.target

@@ -77,7 +77,7 @@ From `service/peripheral-battery.service`:
 
 | Setting | Effect |
 |---|---|
-| `Type=oneshot` + timer | Runs about 0.4 s every 2 minutes, never resident |
+| `Type=oneshot` + timer | Runs for under a second every 30 s (about 60 ms of CPU), never resident |
 | `CapabilityBoundingSet=` (empty), `NoNewPrivileges=yes` | root without any capability: cannot override file permissions, load modules, mount, change network or clock… |
 | `DevicePolicy=closed`, `DeviceAllow=char-hidraw rw` | No device except hidraw (and `/dev/null` and similar pseudo devices) |
 | `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes` | Entire filesystem read-only, `/home` invisible. Only writable path: `/run/peripheral-battery/` |

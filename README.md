@@ -18,16 +18,17 @@ keyboard and headset, without Solaar or HeadsetControl.
 
 ```
  /dev/hidraw*  ──►  peripheral-battery.service  ──►  /run/peripheral-battery/status.json  ──►  bar widget
-  (root only)       (root, sandboxed, every 2 min)        (world-readable, percentages only)    (reads the file)
+  (root only)       (root, sandboxed, every 30 s)         (world-readable, percentages only)    (reads the file)
 ```
 
 The plugin comes in two parts:
 
 1. **A system service** (`service/`). A short Python script, standard library
-   only, that a systemd timer runs every 2 minutes. It asks each device for its
-   battery level, writes the result to `/run/peripheral-battery/status.json`,
-   and exits. Nothing stays resident: a run takes about 0.4 s, most of it
-   waiting for the radio replies.
+   only, that a systemd timer runs every 30 seconds ([configurable](#refresh-interval)).
+   It asks each device for its battery level, writes the result to
+   `/run/peripheral-battery/status.json`, and exits. Nothing stays resident: a
+   run uses about 60 ms of CPU and 8 MB of memory, and lasts under a second,
+   mostly spent waiting for the radio replies.
 2. **The bar widget** (`BarWidget.qml`). It reads that JSON file and nothing
    else. It starts no process and needs no permission.
 
@@ -101,6 +102,41 @@ omarchy restart shell
 Until the service is installed, the widget shows 󰂑. Hover over it for the
 install command.
 
+## Refresh interval
+
+The service reads the devices every **30 seconds** by default. That costs
+about 3 minutes of CPU time per day in total, which is negligible. Each read
+also sends one radio message to each device. Compared to normal use (a moving
+mouse sends hundreds per second) that is very little, but if you want to
+spare your devices' batteries as much as possible, read less often.
+
+To change the interval, add a systemd drop-in. Do not edit the installed unit:
+`install.sh` overwrites it, while it keeps drop-ins.
+
+```bash
+sudo mkdir -p /etc/systemd/system/peripheral-battery.timer.d
+printf '[Timer]\nOnUnitActiveSec=\nOnUnitActiveSec=2min\n' \
+  | sudo tee /etc/systemd/system/peripheral-battery.timer.d/interval.conf
+sudo systemctl daemon-reload
+sudo systemctl restart peripheral-battery.timer
+```
+
+Replace `2min` with the interval you want (`45s`, `1min`, `5min`…). Keep
+the empty `OnUnitActiveSec=` line. Without it, systemd adds your interval to
+the default one instead of replacing it.
+
+Keep it at **5 minutes or less**. The widget dims the readings and warns in
+its tooltip when the data is more than 10 minutes old, because that usually
+means the service stopped.
+
+To go back to the default:
+
+```bash
+sudo rm -r /etc/systemd/system/peripheral-battery.timer.d
+sudo systemctl daemon-reload
+sudo systemctl restart peripheral-battery.timer
+```
+
 ## Update
 
 ```bash
@@ -142,7 +178,8 @@ sidetone.
 
 ```bash
 systemctl status peripheral-battery.timer       # is the timer active?
-journalctl -u peripheral-battery.service        # errors from the last runs
+systemctl list-timers peripheral-battery.timer  # last and next run
+journalctl -u peripheral-battery.service        # errors only: routine runs are not logged
 sudo systemctl start peripheral-battery.service # read the devices now
 cat /run/peripheral-battery/status.json         # what the widget sees
 ```
