@@ -49,10 +49,8 @@ BarWidget {
     return parts.length > 0 ? parts.join("  ") : "󰂑"
   }
 
-  readonly property bool anyLow: {
-    for (var i = 0; i < devices.length; i++)
-      if (devices[i].level <= lowThreshold && devices[i].state === "discharging") return true
-    return false
+  function isLow(d) {
+    return d.level <= lowThreshold && d.state === "discharging"
   }
 
   readonly property string tooltip: {
@@ -116,12 +114,38 @@ BarWidget {
     id: button
     anchors.fill: parent
     bar: root.bar
+    // The built-in label has a single color, so the readings are drawn below
+    // instead: each device can then be dimmed (asleep) or highlighted (low)
+    // on its own. The label still serves the "service missing" icon.
     text: root.label
+    labelVisible: root.fileState !== "ok" || root.devices.length === 0
+    fixedWidth: labelVisible || vertical ? -1 : readings.implicitWidth + scaledHorizontalMargin * 2
     fontSize: Style.font.caption
     horizontalMargin: 6
-    active: root.anyLow
     dimmed: root.stale || root.fileState !== "ok"
     pressable: false
     tooltipText: root.tooltip
+
+    Row {
+      id: readings
+      anchors.centerIn: parent
+      visible: !button.labelVisible
+      spacing: button.fontSize
+
+      Repeater {
+        model: root.devices
+
+        Text {
+          required property var modelData
+          textFormat: Text.PlainText
+          text: root.icon(modelData.kind) + " " + modelData.level + "%" + (modelData.state === "charging" ? "⚡" : "")
+          color: root.isLow(modelData) ? button.activeColor : button.foreground
+          opacity: modelData.online ? 1 : 0.4
+          font.family: button.fontFamily
+          font.pixelSize: button.fontSize
+          renderType: Text.NativeRendering
+        }
+      }
+    }
   }
 }

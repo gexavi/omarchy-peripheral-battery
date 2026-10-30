@@ -9,11 +9,10 @@ keyboard and headset, without Solaar or HeadsetControl.
 
 - **Hover** for the full device names, charging state, and when a sleeping
   device was last read.
-- The widget switches to the theme's alert color when a device drops to
-  **20 %** or below.
+- A device at **20 %** or below switches to the theme's alert color.
 - ⚡ means the device is charging.
-- Devices that go to sleep keep their last reading for up to 12 hours instead
-  of disappearing from the bar.
+- Devices that are asleep or switched off are **dimmed** and keep their last
+  reading for up to 12 hours instead of disappearing from the bar.
 
 ## How it works
 
