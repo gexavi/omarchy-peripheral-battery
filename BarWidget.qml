@@ -12,7 +12,7 @@ BarWidget {
   moduleName: "gexavi.peripheral-battery"
 
   readonly property string statusPath: "/run/peripheral-battery/status.json"
-  readonly property string serviceVersion: "1.2.0"
+  readonly property string serviceVersion: "1.2.1"
   readonly property int lowThreshold: 20
   // The service runs every 30 s by default (configurable, see README); data
   // older than this means it stopped running.
@@ -67,6 +67,8 @@ BarWidget {
       var line = d.name + ": " + d.level + "%"
       if (d.state === "charging") line += " (charging)"
       else if (d.state === "full") line += " (full)"
+      if (d.measured && d.online && d.state === "charging")
+        line += ", measured " + ago(now - d.measured) + " before charging"
       if (!d.online) line += " (asleep, last read " + ago(now - d.seen) + ")"
       lines.push(line)
     }

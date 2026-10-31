@@ -25,7 +25,7 @@ import struct
 import sys
 import time
 
-VERSION = "1.2.0"
+VERSION = "1.2.1"
 DEFAULT_OUTPUT = "/run/peripheral-battery/status.json"
 # Devices that stop answering (asleep, switched off) keep their last reading
 # in the output, flagged offline, until they have been silent this long.
@@ -204,20 +204,26 @@ class Hidpp:
         return name.decode("utf-8", "replace").strip("\0 "), kind
 
     def battery(self, device):
-        """Returns (percent, state) with state in discharging/charging/full."""
+        """Returns (percent, state, measured).
+
+        state is discharging/charging/full. measured is False when the
+        percent cannot be trusted: a voltage read while charging reflects
+        the charger, not the charge (a G502 reads 4.2 V, "100 %", from the
+        moment it is plugged in).
+        """
         idx = self.feature_index(device, FEATURE_UNIFIED_BATTERY)
         if idx:
             soc, level, status, _ = self.request(device, idx, 1)[:4]
             if not soc:
                 soc = {8: 100, 4: 50, 2: 20, 1: 5}.get(level, 0)
             state = {1: "charging", 2: "charging", 3: "full"}.get(status, "discharging")
-            return soc, state
+            return soc, state, True
 
         idx = self.feature_index(device, FEATURE_BATTERY_STATUS)
         if idx:
             level, _, status = self.request(device, idx, 0)[:3]
             state = {1: "charging", 2: "charging", 3: "full", 4: "charging"}.get(status, "discharging")
-            return level, state
+            return level, state, True
 
         idx = self.feature_index(device, FEATURE_BATTERY_VOLTAGE)
         if idx:
@@ -225,7 +231,7 @@ class Hidpp:
             state = "discharging"
             if flags & 0x80:
                 state = "full" if flags & 0x03 == 1 else "charging"
-            return voltage_to_percent(millivolt), state
+            return voltage_to_percent(millivolt), state, state != "charging"
 
         return None
 
@@ -259,13 +265,16 @@ def scan_hidpp(node):
                 continue
             if battery is None:
                 continue
-            devices.append({
+            device = {
                 "key": f"hidpp:{node.pid:04x}:{index}:{name}",
                 "name": name or "Logitech device",
                 "kind": kind or "other",
                 "level": battery[0],
                 "state": battery[1],
-            })
+            }
+            if not battery[2]:
+                device["unmeasured"] = True
+            devices.append(device)
     return devices
 
 
@@ -522,18 +531,48 @@ def scan(previous=()):
     # those read directly before, so that a sleeping mouse is not shown twice.
     direct = {d["name"] for d in list(found) + list(previous)
               if not str(d.get("key", "")).startswith("kernel:")}
-    return found + scan_kernel(direct)
+    kernel = scan_kernel(set())
+    for d in found:
+        if d.pop("unmeasured", False):
+            keep_last_level(d, previous, kernel)
+    return found + [d for d in kernel if d["name"] not in direct]
+
+
+def keep_last_level(device, previous, kernel):
+    """Replace a level that cannot be read now (see Hidpp.battery).
+
+    Uses the last level measured for a device of the same name, whichever
+    connection (receiver or cable) it was read through, and records when it
+    was measured. Without one, falls back on the kernel's figure.
+    """
+    earlier = [d for d in previous if d.get("name") == device["name"] and "level" in d]
+    if earlier:
+        last = max(earlier, key=lambda d: d.get("measured", d.get("seen", 0)))
+        device["level"] = last["level"]
+        device["measured"] = last.get("measured", last.get("seen", 0))
+        return
+    for d in kernel:
+        if d["name"] == device["name"]:
+            device["level"] = d["level"]
+            return
 
 
 KIND_ORDER = ["mouse", "keyboard", "headset", "gamepad"]
 
 
 def merge(previous, found, now):
-    """Keep the last reading of devices that stopped answering."""
+    """Keep the last reading of devices that stopped answering.
+
+    A device answering under another key (a mouse plugged in by cable
+    instead of through its receiver) replaces its old entry rather than
+    showing twice.
+    """
     current = {d["key"]: dict(d, online=True, seen=now) for d in found}
+    online_names = {d["name"] for d in found}
     for d in previous:
         key = d.get("key")
-        if key and key not in current and now - d.get("seen", 0) < FORGET_AFTER:
+        if (key and key not in current and d.get("name") not in online_names
+                and now - d.get("seen", 0) < FORGET_AFTER):
             current[key] = dict(d, online=False)
     return sorted(current.values(), key=lambda d: (KIND_ORDER + [d["kind"]]).index(d["kind"]))
 
