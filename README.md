@@ -1,7 +1,7 @@
 # Wireless Peripheral Battery
 
 An Omarchy bar widget that shows the battery level of your wireless mouse,
-keyboard and headset, without Solaar or HeadsetControl.
+keyboard, headset and game controller, without Solaar or HeadsetControl.
 
 <p align="center">
   <img src="preview.png" alt="Bar showing mouse 68%, keyboard 82% and headset 41%" width="420">
@@ -32,7 +32,8 @@ shows all your devices, a UPower-based widget is simpler and needs no setup.
 ## How it works
 
 ```
- /dev/hidraw*  ──►  peripheral-battery.service  ──►  /run/peripheral-battery/status.json  ──►  bar widget
+ /dev/hidraw*  ─┐
+ /sys (kernel)  ─┴►  peripheral-battery.service  ──►  /run/peripheral-battery/status.json  ──►  bar widget
   (root only)       (root, sandboxed, every 30 s)         (world-readable, percentages only)    (reads the file)
 ```
 
@@ -40,7 +41,9 @@ The plugin comes in two parts:
 
 1. **A system service** (`service/`). A short Python script, standard library
    only, that a systemd timer runs every 30 seconds ([configurable](#refresh-interval)).
-   It asks each device for its battery level, writes the result to
+   It asks each device for its battery level, adds the device batteries the
+   kernel already tracks (read from sysfs, without talking to the device),
+   writes the result to
    `/run/peripheral-battery/status.json`, and exits. Nothing stays resident: a
    run uses about 60 ms of CPU and 8 MB of memory, and lasts under a second,
    mostly spent waiting for the radio replies.
@@ -71,7 +74,12 @@ to the devices, the sandbox settings, and what is and is not protected.
 | Logitech G915 TKL | Lightspeed receiver `046d:c545` | Tested |
 | SteelSeries Arctis 7 (2019) | USB dongle `1038:12ad` | Tested |
 | Other Logitech HID++ 2.0 devices with battery feature `0x1000`, `0x1001` or `0x1004` (Unifying, Bolt, Lightspeed, cable or Bluetooth) | | Should work, untested |
-| Legacy HID++ 1.0 Logitech devices, other headsets | | Not supported |
+| SteelSeries Arctis 7 (2017), 1 Wireless, 7P, 7X, 9, 7+, 7P+, 7X+, Nova 3P/3X Wireless, Nova 5/5X, Nova 7/7X/7P (all revisions), Nova Pro Wireless | USB dongle or base station | Should work, untested (requests from HeadsetControl) |
+| Device batteries reported by the kernel: PlayStation, Xbox (xpadneo), Switch and Steam controllers, Wiimotes, Apple Magic devices, HID devices reporting a battery, Logitech HID++ 1.0 through `hid-logitech-hidpp` | Any | Should work, untested |
+| Bluetooth headphones and other devices whose battery only BlueZ knows | | Not supported, use a UPower widget |
+
+Devices the kernel reports are matched by name with the ones read directly,
+so a Logitech device appears once, with the more detailed direct reading.
 
 If your device works, or does not, please open an issue with its name and
 the output of `cat /run/peripheral-battery/status.json`.
@@ -204,12 +212,13 @@ cat /run/peripheral-battery/status.json         # what the widget sees
 | 󰂑, dimmed | `status.json` missing: the service is not installed or has not run yet |
 | Readings dimmed | Not updated for 10 minutes: the timer is stopped |
 | A device is missing | It was never seen awake, or it is not supported |
+| A kernel-reported device shows 󰂄 | Its kind (mouse, controller…) could not be told from its name or driver |
 
 ## Credits
 
 The HID++ 2.0 battery features and the Li-ion voltage-to-percent curve
 come from [Solaar](https://github.com/pwr-Solaar/Solaar). The Arctis 7 status
-request comes from [HeadsetControl](https://github.com/Sapd/HeadsetControl).
+status requests come from [HeadsetControl](https://github.com/Sapd/HeadsetControl).
 This plugin reimplements the few requests it needs and contains no code from
 either project.
 

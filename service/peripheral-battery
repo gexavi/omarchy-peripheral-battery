@@ -3,12 +3,16 @@
 
 Runs as a short-lived systemd oneshot (see peripheral-battery.service), once
 per timer tick. It talks to the devices directly through /dev/hidraw and only
-ever sends the read-only queries listed in docs/security.md.
+ever sends the read-only queries listed in docs/security.md. Batteries the
+kernel already tracks are read from sysfs instead.
 
 Supported:
   * Logitech HID++ 2.0 devices behind a receiver (Unifying, Lightspeed, Bolt)
     or connected directly, via features 0x1004, 0x1000 or 0x1001.
-  * SteelSeries Arctis 7 (2019) wireless headset.
+  * SteelSeries Arctis wireless headsets (Arctis 1, 7, 7+, 9, Nova 3P/5/7,
+    Nova Pro Wireless), with the status requests HeadsetControl uses.
+  * Any device battery the kernel exposes in /sys/class/power_supply
+    (game controllers, Apple Magic devices, Logitech HID++ 1.0...).
 
 Standard library only, no third-party dependency.
 """
@@ -21,7 +25,7 @@ import struct
 import sys
 import time
 
-VERSION = "1.1.0"
+VERSION = "1.2.0"
 DEFAULT_OUTPUT = "/run/peripheral-battery/status.json"
 # Devices that stop answering (asleep, switched off) keep their last reading
 # in the output, flagged offline, until they have been silent this long.
@@ -268,46 +272,243 @@ def scan_hidpp(node):
 # --------------------------------------------------------------------------
 # SteelSeries Arctis
 
+#
+# Each dongle or base station answers one status request on one HID
+# interface. The requests and reply layouts come from HeadsetControl
+# (lib/devices/steelseries_*.hpp); only the Arctis 7 (2019) has been tested
+# with this script. A parser returns (percent, state), or None when the
+# dongle reports the headset as switched off or out of range.
+
 STEELSERIES_VID = 0x1038
-# product id -> (name, HID interface carrying the status reports)
+
+
+def _scale(raw, lo, hi):
+    return max(0, min(100, round((raw - lo) * 100 / (hi - lo))))
+
+
+def _parse_arctis_7(r):
+    # Byte 2: charge in percent. With the headset switched off the dongle
+    # still answers, with a level of 0. A real 0 % cannot be read either,
+    # since the headset shuts down before that.
+    return (r[2], "discharging") if 0 < r[2] <= 100 else None
+
+
+def _parse_arctis_1(r):
+    # Byte 2: 0x01 = headset off. Byte 3: charge in percent.
+    return (r[3], "discharging") if r[2] != 0x01 and 0 < r[3] <= 100 else None
+
+
+def _parse_arctis_9(r):
+    # Byte 3: charge from 0x64 (empty) to 0x9A (full). Byte 4: 0x01 = charging.
+    # This reply carries no echo of the request, so the range check also
+    # rejects any unrelated report.
+    if not 0x64 <= r[3] <= 0x9A:
+        return None
+    return _scale(r[3], 0x64, 0x9A), "charging" if r[4] == 0x01 else "discharging"
+
+
+def _parse_arctis_7_plus(r):
+    # Byte 1: 0x01 = headset off. Byte 2: charge, 0-4. Byte 3: 0x01 = charging.
+    if r[1] == 0x01:
+        return None
+    return _scale(r[2], 0, 4), "charging" if r[3] == 0x01 else "discharging"
+
+
+def _nova_7_parser(percent):
+    # Byte 3: 0x00 = headset off, 0x01/0x02 = charging. Byte 2: charge, either
+    # in steps of 0-4 or, on newer firmware (new product ids), in percent.
+    def parse(r):
+        if r[3] == 0x00:
+            return None
+        level = min(r[2], 100) if percent else _scale(r[2], 0, 4)
+        return level, "charging" if r[3] in (0x01, 0x02) else "discharging"
+    return parse
+
+
+def _parse_nova_5(r):
+    # Byte 1: 0x02 = headset off. Byte 3: charge in percent. Byte 4: 0x01 = charging.
+    if r[1] == 0x02:
+        return None
+    return min(r[3], 100), "charging" if r[4] == 0x01 else "discharging"
+
+
+def _parse_nova_pro_wireless(r):
+    # Byte 15: 0x01 = headset off, 0x02 = charging by cable. Byte 6: charge, 0-8.
+    if r[15] == 0x01:
+        return None
+    return _scale(r[6], 0, 8), "charging" if r[15] == 0x02 else "discharging"
+
+
+class ArctisProtocol:
+    def __init__(self, interface, request, echo, length, parse):
+        self.interface = interface
+        self.request = request    # bytes written to the hidraw node
+        self.echo = echo          # prefix identifying the reply (b"" = none)
+        self.length = length      # shortest valid reply
+        self.parse = parse
+
+
+ARCTIS_7 = ArctisProtocol(5, b"\x06\x18", b"\x06\x18", 3, _parse_arctis_7)
+ARCTIS_1 = ArctisProtocol(3, b"\x06\x12", b"\x06\x12", 4, _parse_arctis_1)
+ARCTIS_9 = ArctisProtocol(0, b"\x00\x20", b"", 5, _parse_arctis_9)
+ARCTIS_7_PLUS = ArctisProtocol(3, b"\x00\xb0", b"\xb0", 4, _parse_arctis_7_plus)
+NOVA_7_STEPS = ArctisProtocol(3, b"\x00\xb0", b"\xb0", 4, _nova_7_parser(percent=False))
+NOVA_7_PERCENT = ArctisProtocol(3, b"\x00\xb0", b"\xb0", 4, _nova_7_parser(percent=True))
+NOVA_5 = ArctisProtocol(3, b"\x00\xb0", b"\xb0", 5, _parse_nova_5)
+NOVA_PRO_WIRELESS = ArctisProtocol(4, b"\x06\xb0".ljust(31, b"\0"), b"\x06\xb0", 16, _parse_nova_pro_wireless)
+
+# product id -> (name, protocol)
 ARCTIS_MODELS = {
-    0x12AD: ("SteelSeries Arctis 7", 5),
+    0x1260: ("SteelSeries Arctis 7", ARCTIS_7),
+    0x12AD: ("SteelSeries Arctis 7", ARCTIS_7),
+    0x12B3: ("SteelSeries Arctis 1 Wireless", ARCTIS_1),
+    0x12B6: ("SteelSeries Arctis 1 Wireless", ARCTIS_1),
+    0x12D5: ("SteelSeries Arctis 7P", ARCTIS_1),
+    0x12D7: ("SteelSeries Arctis 7X", ARCTIS_1),
+    0x12C2: ("SteelSeries Arctis 9", ARCTIS_9),
+    0x12C4: ("SteelSeries Arctis 9", ARCTIS_9),
+    0x220E: ("SteelSeries Arctis 7+", ARCTIS_7_PLUS),
+    0x2212: ("SteelSeries Arctis 7P+", ARCTIS_7_PLUS),
+    0x2216: ("SteelSeries Arctis 7X+", ARCTIS_7_PLUS),
+    0x2236: ("SteelSeries Arctis 7+", ARCTIS_7_PLUS),
+    0x2202: ("SteelSeries Arctis Nova 7", NOVA_7_STEPS),
+    0x2206: ("SteelSeries Arctis Nova 7X", NOVA_7_STEPS),
+    0x220A: ("SteelSeries Arctis Nova 7P", NOVA_7_STEPS),
+    0x223A: ("SteelSeries Arctis Nova 7", NOVA_7_STEPS),
+    0x227A: ("SteelSeries Arctis Nova 7", NOVA_7_STEPS),
+    0x22A4: ("SteelSeries Arctis Nova 7X", NOVA_7_STEPS),
+    0x22A1: ("SteelSeries Arctis Nova 7", NOVA_7_PERCENT),
+    0x227E: ("SteelSeries Arctis Nova 7 Gen 2", NOVA_7_PERCENT),
+    0x2258: ("SteelSeries Arctis Nova 7X", NOVA_7_PERCENT),
+    0x229E: ("SteelSeries Arctis Nova 7X", NOVA_7_PERCENT),
+    0x22AD: ("SteelSeries Arctis Nova 7X", NOVA_7_PERCENT),
+    0x22A5: ("SteelSeries Arctis Nova 7X", NOVA_7_PERCENT),
+    0x22A9: ("SteelSeries Arctis Nova 7", NOVA_7_PERCENT),
+    0x22A7: ("SteelSeries Arctis Nova 7P", NOVA_7_PERCENT),
+    0x2298: ("SteelSeries Arctis Nova 7P", NOVA_7_PERCENT),
+    0x2232: ("SteelSeries Arctis Nova 5", NOVA_5),
+    0x2253: ("SteelSeries Arctis Nova 5X", NOVA_5),
+    0x2269: ("SteelSeries Arctis Nova 3P Wireless", NOVA_5),
+    0x226D: ("SteelSeries Arctis Nova 3X Wireless", NOVA_5),
+    0x12E0: ("SteelSeries Arctis Nova Pro Wireless", NOVA_PRO_WIRELESS),
+    0x12E5: ("SteelSeries Arctis Nova Pro Wireless", NOVA_PRO_WIRELESS),
 }
 
 
 def is_arctis_node(node):
     model = ARCTIS_MODELS.get(node.pid) if node.vid == STEELSERIES_VID else None
-    return model is not None and node.interface == model[1]
+    return model is not None and node.interface == model[1].interface
+
+
+def is_arctis_reply(protocol, report):
+    return len(report) >= protocol.length and report.startswith(protocol.echo)
 
 
 def scan_arctis(node):
-    name, _ = ARCTIS_MODELS[node.pid]
+    name, protocol = ARCTIS_MODELS[node.pid]
     with open(node.dev, "r+b", buffering=0) as f:
         fd = f.fileno()
-        # Report 0x06, command 0x18: status request. Byte 2 of the reply is
-        # the charge in percent.
-        os.write(fd, b"\x06\x18")
-        reply = read_matching(fd, lambda r: r if len(r) >= 3 and r[0] == 0x06 and r[1] == 0x18 else None, 1.0)
-    if reply is None:
-        return []
-    level = reply[2]
-    # With the headset switched off the dongle still answers, with an
-    # otherwise identical reply and a level of 0. A real 0 % cannot be read
-    # either, since the headset shuts down before that.
-    if level == 0 or level > 100:
+        os.write(fd, protocol.request)
+        reply = read_matching(fd, lambda r: r if is_arctis_reply(protocol, r) else None, 1.0)
+    reading = protocol.parse(reply) if reply is not None else None
+    if reading is None:
         return []
     return [{
         "key": f"arctis:{node.pid:04x}",
         "name": name,
         "kind": "headset",
-        "level": level,
-        "state": "discharging",
+        "level": reading[0],
+        "state": reading[1],
     }]
 
 
 # --------------------------------------------------------------------------
+# Batteries the kernel already exposes
+#
+# Several kernel drivers publish a device battery under
+# /sys/class/power_supply: game controllers (playstation, xpadneo, nintendo,
+# wiimote, steam), Apple Magic devices, HID devices that report a battery
+# strength, and Logitech devices through hid-logitech-hidpp (which also
+# covers the HID++ 1.0 devices the reader above skips). Reading them needs
+# no request to the device: the values are read-only sysfs attributes.
 
-def scan():
+POWER_SUPPLY_DIR = "/sys/class/power_supply"
+CAPACITY_LEVELS = {"Full": 100, "High": 80, "Normal": 50, "Low": 20, "Critical": 5}
+DRIVER_KINDS = {
+    "playstation": "gamepad", "sony": "gamepad", "xpadneo": "gamepad",
+    "nintendo": "gamepad", "wiimote": "gamepad", "steam": "gamepad",
+    "magicmouse": "mouse", "apple": "keyboard",
+}
+NAME_KINDS = [
+    (re.compile(r"controller|gamepad|joy-?con|dualsense|dualshock|xbox", re.I), "gamepad"),
+    (re.compile(r"mouse|trackpad|trackball", re.I), "mouse"),
+    (re.compile(r"keyboard", re.I), "keyboard"),
+    (re.compile(r"headset|headphone|buds", re.I), "headset"),
+]
+
+
+def _uevent(path, prefix=""):
+    props = {}
+    for line in _read_text(path).splitlines():
+        key, sep, value = line.partition("=")
+        if sep and key.startswith(prefix):
+            props[key[len(prefix):]] = value
+    return props
+
+
+def device_kind(name, driver):
+    if driver in DRIVER_KINDS:
+        return DRIVER_KINDS[driver]
+    for pattern, kind in NAME_KINDS:
+        if pattern.search(name):
+            return kind
+    return "other"
+
+
+def scan_kernel(skip_names):
+    """Device batteries from sysfs, except those named in skip_names."""
+    try:
+        entries = sorted(os.listdir(POWER_SUPPLY_DIR))
+    except OSError:
+        return []
+    devices = []
+    for entry in entries:
+        base = os.path.join(POWER_SUPPLY_DIR, entry)
+        props = _uevent(os.path.join(base, "uevent"), "POWER_SUPPLY_")
+        # SCOPE=Device: a peripheral's battery, not the laptop's own.
+        if props.get("TYPE") != "Battery" or props.get("SCOPE") != "Device" or props.get("PRESENT") == "0":
+            continue
+        status = props.get("STATUS", "Unknown")
+        if props.get("CAPACITY", "").isdigit():
+            level = min(int(props["CAPACITY"]), 100)
+        elif props.get("CAPACITY_LEVEL") in CAPACITY_LEVELS:
+            level = CAPACITY_LEVELS[props["CAPACITY_LEVEL"]]
+        else:
+            continue
+        # A HID battery the device has not reported yet reads 0 % with an
+        # unknown status.
+        if level == 0 and status == "Unknown":
+            continue
+        parent = os.path.realpath(os.path.join(base, "device"))
+        hid = _uevent(os.path.join(parent, "uevent"))
+        name = (props.get("MODEL_NAME") or hid.get("HID_NAME") or entry).strip()
+        if name in skip_names:
+            continue  # already read directly, with more detail
+        driver = os.path.basename(os.path.realpath(os.path.join(parent, "driver")))
+        serial = props.get("SERIAL_NUMBER") or hid.get("HID_UNIQ") or ""
+        devices.append({
+            "key": f"kernel:{name}:{serial}" if serial else f"kernel:{name}",
+            "name": name,
+            "kind": device_kind(name, driver),
+            "level": level,
+            "state": {"Charging": "charging", "Full": "full"}.get(status, "discharging"),
+        })
+    return devices
+
+
+# --------------------------------------------------------------------------
+
+def scan(previous=()):
     found = []
     for node in hidraw_nodes():
         try:
@@ -317,7 +518,14 @@ def scan():
                 found += scan_arctis(node)
         except OSError as e:
             print(f"{node.dev}: {e}", file=sys.stderr)
-    return found
+    # The kernel also lists most Logitech devices read above. Skip them, and
+    # those read directly before, so that a sleeping mouse is not shown twice.
+    direct = {d["name"] for d in list(found) + list(previous)
+              if not str(d.get("key", "")).startswith("kernel:")}
+    return found + scan_kernel(direct)
+
+
+KIND_ORDER = ["mouse", "keyboard", "headset", "gamepad"]
 
 
 def merge(previous, found, now):
@@ -327,7 +535,7 @@ def merge(previous, found, now):
         key = d.get("key")
         if key and key not in current and now - d.get("seen", 0) < FORGET_AFTER:
             current[key] = dict(d, online=False)
-    return sorted(current.values(), key=lambda d: (["mouse", "keyboard", "headset"] + [d["kind"]]).index(d["kind"]))
+    return sorted(current.values(), key=lambda d: (KIND_ORDER + [d["kind"]]).index(d["kind"]))
 
 
 def main():
@@ -339,7 +547,7 @@ def main():
         previous = []
 
     now = int(time.time())
-    status = {"version": VERSION, "updated": now, "devices": merge(previous, scan(), now)}
+    status = {"version": VERSION, "updated": now, "devices": merge(previous, scan(previous), now)}
 
     tmp = output + ".tmp"
     with open(tmp, "w") as f:

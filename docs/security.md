@@ -8,7 +8,7 @@ does, what limits it, and what it protects you from.
 | Part | Runs as | Can access |
 |---|---|---|
 | `BarWidget.qml` | Your user, inside `omarchy-shell` | Reads `/run/peripheral-battery/status.json`. That is all it does. |
-| `peripheral-battery` (service) | root, sandboxed, no capabilities | `/dev/hidraw*` read/write, writes `/run/peripheral-battery/` |
+| `peripheral-battery` (service) | root, sandboxed, no capabilities | `/dev/hidraw*` read/write, `/sys` read-only, writes `/run/peripheral-battery/` |
 
 The widget never talks to the devices, starts no process and needs no
 permission.
@@ -56,8 +56,24 @@ Only read requests. It never writes a setting.
 Slots 1–6 of each receiver are pinged. Devices connected by cable or Bluetooth
 use the direct address `0xFF`.
 
-**SteelSeries Arctis 7** (`1038:12ad`, interface 5): report `0x06 0x18`
-(status request). Byte 2 of the reply is the charge.
+**SteelSeries Arctis** (vendor `1038`): one status request, on the one
+interface that carries it, taken from HeadsetControl. No other message is sent.
+
+| Models | Interface | Request |
+|---|---|---|
+| Arctis 7 (2017, 2019) | 5 | `06 18` |
+| Arctis 1 Wireless, 7P, 7X | 3 | `06 12` |
+| Arctis 9 | 0 | `00 20` |
+| Arctis 7+, 7P+, 7X+, Nova 3P/3X Wireless, Nova 5/5X, Nova 7/7X/7P | 3 | `00 b0` |
+| Arctis Nova Pro Wireless | 4 | `06 b0`, padded to 31 bytes |
+
+The replies hold the charge, a charging flag and a "headset off" flag. See
+`ARCTIS_MODELS` in `service/peripheral-battery` for the byte layout of each.
+
+**Kernel batteries** (`/sys/class/power_supply`, entries with
+`SCOPE=Device`): read-only attributes. The service sends nothing to these
+devices; the kernel driver may query the device itself when the attribute is
+read, as it does for UPower.
 
 ## What happens to the data it reads
 
