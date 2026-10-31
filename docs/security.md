@@ -53,8 +53,24 @@ Only read requests. It never writes a setting.
 | `0x1000` Battery status | 0 `getLevel` | Same, older devices |
 | `0x1001` Battery voltage | 0 `getVoltage` | Same, from the voltage (converted to %) |
 
-Slots 1–6 of each receiver are pinged. Devices connected by cable or Bluetooth
-use the direct address `0xFF`.
+Only receivers get their slots 1–6 pinged. A node is a receiver when its
+product id is a known Logitech receiver (Unifying, Bolt, Nano, Lightspeed) or
+when it answers a ping on the direct address `0xFF` with an HID++ 1.0 error.
+Devices connected by cable or Bluetooth use the direct address `0xFF`.
+
+Other Logitech nodes that carry the HID++ report (headset dongles, for
+example) are handled carefully:
+
+- A hidraw node is left alone for its first 60 seconds, so a device that has
+  just been plugged in, or reconnected by a USB KVM switch, can finish
+  initialising first.
+- A node that is not a receiver gets at most two pings on `0xFF` per run. If
+  it answers as HID++ 2.0 but has none of the battery features, or gives no
+  reading three runs in a row, it is not contacted again until it is
+  unplugged and plugged back in. Receivers are always polled, since their
+  devices go to sleep and wake up.
+- The first probe of each node, and giving up on one, is logged as a notice:
+  `journalctl -u peripheral-battery.service` shows which nodes are contacted.
 
 **SteelSeries Arctis** (vendor `1038`): one status request, on the one
 interface that carries it, taken from HeadsetControl. No other message is sent.
@@ -93,7 +109,7 @@ From `service/peripheral-battery.service`:
 
 | Setting | Effect |
 |---|---|
-| `Type=oneshot` + timer | Runs for under a second every 30 s (about 60 ms of CPU), never resident |
+| `Type=oneshot` + timer | Runs for under a second every 30 s (about 60 ms of CPU), never resident. Besides `status.json` it keeps `probe-state.json` (root-only) in `/run/peripheral-battery/`, to remember which nodes not to probe again |
 | `CapabilityBoundingSet=` (empty), `NoNewPrivileges=yes` | root without any capability: cannot override file permissions, load modules, mount, change network or clock… |
 | `DevicePolicy=closed`, `DeviceAllow=char-hidraw rw` | No device except hidraw (and `/dev/null` and similar pseudo devices) |
 | `ProtectSystem=strict`, `ProtectHome=yes`, `PrivateTmp=yes` | Entire filesystem read-only, `/home` invisible. Only writable path: `/run/peripheral-battery/` |

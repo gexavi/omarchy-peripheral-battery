@@ -28,8 +28,9 @@ install -m 0644 -o root -g root "$here/peripheral-battery.service" "$units/perip
 install -m 0644 -o root -g root "$here/peripheral-battery.timer" "$units/peripheral-battery.timer"
 
 systemctl daemon-reload
-# Start from fresh readings so nothing recorded by a previous version lingers.
-rm -f /run/peripheral-battery/status.json
+# Start from fresh readings so nothing recorded by a previous version lingers,
+# and probe every device again.
+rm -f /run/peripheral-battery/status.json /run/peripheral-battery/probe-state.json
 systemctl enable peripheral-battery.timer
 # Restart rather than start, so an update applies new timer settings.
 systemctl restart peripheral-battery.timer

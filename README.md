@@ -202,7 +202,7 @@ sidetone.
 ```bash
 systemctl status peripheral-battery.timer       # is the timer active?
 systemctl list-timers peripheral-battery.timer  # last and next run
-journalctl -u peripheral-battery.service        # errors only: routine runs are not logged
+journalctl -u peripheral-battery.service        # devices probed for the first time, devices given up on, errors
 sudo systemctl start peripheral-battery.service # read the devices now
 cat /run/peripheral-battery/status.json         # what the widget sees
 ```
@@ -211,7 +211,7 @@ cat /run/peripheral-battery/status.json         # what the widget sees
 |---|---|
 | 󰂑, dimmed | `status.json` missing: the service is not installed or has not run yet |
 | Readings dimmed | Not updated for 10 minutes: the timer is stopped |
-| A device is missing | It was never seen awake, or it is not supported |
+| A device is missing | It was never seen awake, or it is not supported. A device just plugged in (or switched back to by a KVM) is first read after 60 seconds |
 | A kernel-reported device shows 󰂄 | Its kind (mouse, controller…) could not be told from its name or driver |
 
 ## Credits

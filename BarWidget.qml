@@ -12,7 +12,7 @@ BarWidget {
   moduleName: "gexavi.peripheral-battery"
 
   readonly property string statusPath: "/run/peripheral-battery/status.json"
-  readonly property string serviceVersion: "1.2.1"
+  readonly property string serviceVersion: "1.4.0"
   readonly property int lowThreshold: 20
   // The service runs every 30 s by default (configurable, see README); data
   // older than this means it stopped running.

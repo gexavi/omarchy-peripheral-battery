@@ -25,11 +25,18 @@ import struct
 import sys
 import time
 
-VERSION = "1.2.1"
+VERSION = "1.4.0"
 DEFAULT_OUTPUT = "/run/peripheral-battery/status.json"
 # Devices that stop answering (asleep, switched off) keep their last reading
 # in the output, flagged offline, until they have been silent this long.
 FORGET_AFTER = 12 * 3600
+# A hidraw node is left alone for this long after it appears. Right after a
+# hotplug (a USB KVM switching back, a dongle plugged in) some devices are
+# still initialising, and talking to them then is pointless at best.
+SETTLE_SECONDS = 60
+# A node that is not a receiver and has given no battery reading after this
+# many probes is not probed again until it is unplugged and plugged back in.
+MAX_EMPTY_PROBES = 3
 
 HID_DEVICE_DIR = re.compile(r"^[0-9A-F]{4}:[0-9A-F]{4}:[0-9A-F]{4}\.[0-9A-F]{4}$")
 
@@ -55,6 +62,20 @@ class HidrawNode:
         self.is_virtual_child = bool(HID_DEVICE_DIR.match(os.path.basename(parent)))
         iface = _read_text(os.path.join(parent, "bInterfaceNumber")).strip()
         self.interface = int(iface, 16) if iface else None
+        name = re.search(r"^HID_NAME=(.*)$", uevent, re.M)
+        self.hid_name = name.group(1).strip() if name else ""
+        # The /dev node is created anew on every hotplug, so its change time
+        # tells how long ago the device appeared, and together with the name
+        # it identifies this connection of the device.
+        try:
+            self.created = int(os.stat(self.dev).st_ctime)
+        except OSError:
+            self.created = 0
+        self.identity = f"{self.name}:{self.vid:04x}:{self.pid:04x}:{self.interface}:{self.created}"
+
+    def describe(self):
+        iface = f", interface {self.interface}" if self.interface is not None else ""
+        return f"{self.name} ({self.vid:04x}:{self.pid:04x}{iface}, {self.hid_name or 'unnamed'})"
 
 
 def _read_text(path):
@@ -114,6 +135,16 @@ SHORT_LEN, LONG_LEN = 7, 20
 SOFTWARE_ID = 0x0B
 DIRECT_DEVICE = 0xFF
 
+# Receivers (Unifying, Bolt, Nano, Lightspeed), from Solaar's list. Paired
+# devices sit behind slots 1-6. Receivers not listed here are recognised by
+# the HID++ 1.0 error they return to a ping on the direct address.
+RECEIVER_PIDS = {
+    0xC52B, 0xC532,                                   # Unifying
+    0xC548,                                           # Bolt
+    0xC52F, 0xC526, 0xC52E, 0xC531, 0xC534, 0xC537,   # Nano
+    0xC539, 0xC53A, 0xC53D, 0xC53F, 0xC541, 0xC545, 0xC547, 0xC54D,  # Lightspeed
+}
+
 FEATURE_DEVICE_NAME = 0x0005
 FEATURE_BATTERY_STATUS = 0x1000
 FEATURE_BATTERY_VOLTAGE = 0x1001
@@ -168,11 +199,15 @@ class Hidpp:
         return reply
 
     def protocol(self, device):
-        """Ping (root feature, function 1). Returns the major version or None.
+        """Ping (root feature, function 1).
 
-        Empty receiver slots answer with an error right away. A device in
-        power saving can miss the first ping while it wakes up, so silence
-        earns one more, more patient, attempt.
+        Returns the major version for HID++ 2.0 and later, 1 when the
+        address answers with an HID++ 1.0 error (a receiver on the direct
+        address, an empty slot behind a receiver, a legacy device), or None
+        when nothing answers.
+
+        A device in power saving can miss the first ping while it wakes up,
+        so silence earns one more, more patient, attempt.
         """
         for timeout in (0.4, 1.5):
             try:
@@ -180,7 +215,7 @@ class Hidpp:
             except HidppError as e:
                 if e.args[0] == "timeout":
                     continue
-                return None
+                return 1
             return r[0] if r[2] == 0x5A else None
         return None
 
@@ -246,13 +281,30 @@ def voltage_to_percent(mv):
 
 
 def scan_hidpp(node):
+    """Returns (devices, role, note).
+
+    role is "receiver" or "direct". note says why nothing was found, for
+    the log. Only receivers get their slots pinged: a Logitech node that is
+    neither a known receiver nor answers like one (a headset dongle, a
+    webcam...) gets at most two pings on the direct address.
+    """
     devices = []
+    note = None
     with open(node.dev, "r+b", buffering=0) as f:
         hidpp = Hidpp(f.fileno(), short_reports=b"\x85\x10" in node.descriptor)
-        # A receiver answers the direct address as an HID++ 1.0 device; a
-        # device plugged in by cable or Bluetooth answers it as 2.0 or later.
-        direct = hidpp.protocol(DIRECT_DEVICE)
-        indices = [DIRECT_DEVICE] if direct and direct >= 2 else range(1, 7)
+        if node.pid in RECEIVER_PIDS:
+            role, indices = "receiver", range(1, 7)
+        else:
+            # A receiver answers the direct address as an HID++ 1.0 device;
+            # a device plugged in by cable or Bluetooth answers it as 2.0 or
+            # later. Anything else does not speak HID++ there: leave it be.
+            direct = hidpp.protocol(DIRECT_DEVICE)
+            if direct is None:
+                return [], "direct", "no HID++ reply"
+            if direct >= 2:
+                role, indices = "direct", [DIRECT_DEVICE]
+            else:
+                role, indices = "receiver", range(1, 7)
         for index in indices:
             if index != DIRECT_DEVICE:
                 version = hidpp.protocol(index)
@@ -261,9 +313,11 @@ def scan_hidpp(node):
             try:
                 name, kind = hidpp.name(index)
                 battery = hidpp.battery(index)
-            except HidppError:
+            except HidppError as e:
+                note = f"HID++ error {e.args[0]}"
                 continue
             if battery is None:
+                note = "no battery feature"
                 continue
             device = {
                 "key": f"hidpp:{node.pid:04x}:{index}:{name}",
@@ -275,7 +329,7 @@ def scan_hidpp(node):
             if not battery[2]:
                 device["unmeasured"] = True
             devices.append(device)
-    return devices
+    return devices, role, note
 
 
 # --------------------------------------------------------------------------
@@ -517,16 +571,91 @@ def scan_kernel(skip_names):
 
 # --------------------------------------------------------------------------
 
-def scan(previous=()):
+def log(level, message):
+    """Write to the journal. systemd reads the <level> prefix (5 = notice,
+    4 = warning); the unit keeps notices and above."""
+    print(f"<{level}>{message}", file=sys.stderr, flush=True)
+
+
+def load_probe_state(path):
+    try:
+        with open(path) as f:
+            state = json.load(f)
+        return state if isinstance(state, dict) else {}
+    except (OSError, ValueError):
+        return {}
+
+
+def scan_node(node, probe):
+    """Reads one node, unless it is too new or known to have nothing.
+
+    probe is this node's entry in the probe state, updated in place:
+    "empty" counts the probes of a non-receiver that gave no battery,
+    "ignored" marks it as not worth probing again, "read" that it gave a
+    reading at least once, "logged" that the first probe was reported to
+    the journal. The probe state resets whenever the node is recreated
+    (unplugged and plugged back in).
+    """
+    if probe.get("ignored"):
+        return []
+    age = time.time() - node.created
+    if node.created and age < SETTLE_SECONDS:
+        return []
+
+    if is_arctis_node(node):
+        devices, role, note = scan_arctis(node), "arctis", None
+        if not devices:
+            note = "headset off or no reply"
+    else:
+        devices, role, note = scan_hidpp(node)
+
+    if devices:
+        probe["empty"] = 0
+        probe["read"] = True
+        if not probe.get("logged"):
+            names = ", ".join(f"{d['name']} {d['level']}%" for d in devices)
+            log(5, f"{node.describe()}: {role}, read {names}")
+            probe["logged"] = True
+        return devices
+
+    # Receivers stay polled: their devices go to sleep and wake up. Arctis
+    # dongles too: the headset is often just switched off.
+    if role != "direct":
+        if not probe.get("logged"):
+            log(5, f"{node.describe()}: {role}, nothing to read yet ({note or 'no device awake'})")
+            probe["logged"] = True
+        return []
+
+    # A device that gave a reading before is only failing for now (asleep,
+    # busy): keep trying it.
+    if probe.get("read"):
+        return []
+    probe["empty"] = probe.get("empty", 0) + 1
+    if note == "no battery feature" or probe["empty"] >= MAX_EMPTY_PROBES:
+        probe["ignored"] = True
+        log(5, f"{node.describe()}: no battery reading ({note}), "
+               "not probing it again until it is reconnected")
+    return []
+
+
+def scan(previous=(), probe_state=None):
+    if probe_state is None:
+        probe_state = {}
     found = []
+    seen = set()
     for node in hidraw_nodes():
+        if not (is_hidpp_node(node) or is_arctis_node(node)):
+            continue
+        seen.add(node.identity)
+        probe = probe_state.setdefault(node.identity, {})
         try:
-            if is_hidpp_node(node):
-                found += scan_hidpp(node)
-            elif is_arctis_node(node):
-                found += scan_arctis(node)
+            found += scan_node(node, probe)
         except OSError as e:
-            print(f"{node.dev}: {e}", file=sys.stderr)
+            log(4, f"{node.describe()}: {e}")
+    # Forget nodes that are gone, so a reconnected device starts afresh.
+    for identity in list(probe_state):
+        if identity not in seen:
+            del probe_state[identity]
     # The kernel also lists most Logitech devices read above. Skip them, and
     # those read directly before, so that a sleeping mouse is not shown twice.
     direct = {d["name"] for d in list(found) + list(previous)
@@ -585,14 +714,25 @@ def main():
     except (OSError, ValueError):
         previous = []
 
-    now = int(time.time())
-    status = {"version": VERSION, "updated": now, "devices": merge(previous, scan(previous), now)}
+    # Kept apart from status.json, which the widget reads: which node was
+    # probed how often is of no use to it.
+    state_path = os.path.join(os.path.dirname(output) or ".", "probe-state.json")
+    probe_state = load_probe_state(state_path)
 
-    tmp = output + ".tmp"
+    now = int(time.time())
+    status = {"version": VERSION, "updated": now,
+              "devices": merge(previous, scan(previous, probe_state), now)}
+
+    write_json(output, status, 0o644)
+    write_json(state_path, probe_state, 0o600)
+
+
+def write_json(path, data, mode):
+    tmp = path + ".tmp"
     with open(tmp, "w") as f:
-        json.dump(status, f, indent=2)
-    os.chmod(tmp, 0o644)
-    os.replace(tmp, output)
+        json.dump(data, f, indent=2)
+    os.chmod(tmp, mode)
+    os.replace(tmp, path)
 
 
 if __name__ == "__main__":
