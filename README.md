@@ -4,7 +4,7 @@ An Omarchy bar widget that shows the battery level of your wireless mouse,
 keyboard, headset and game controller, without Solaar or HeadsetControl.
 
 <p align="center">
-  <img src="preview.png" alt="Bar showing mouse 68%, keyboard 82% and headset 41%" width="420">
+  <img src="preview.png" alt="Bar widget showing mouse 64%, keyboard 77%, headset 18% in the alert color, and a charging controller at 45%" width="640">
 </p>
 
 - **Hover** for the full device names, charging state, and when a sleeping
