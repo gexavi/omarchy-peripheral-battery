@@ -12,7 +12,7 @@ keyboard, headset and game controller, without Solaar or HeadsetControl.
 - A device at **20 %** or below switches to the theme's alert color.
 - ⚡ means the device is charging.
 - Devices that are asleep or switched off are **dimmed** and keep their last
-  reading for up to 12 hours instead of disappearing from the bar.
+  reading for up to 48 hours instead of disappearing from the bar.
 
 ## Why another battery plugin?
 

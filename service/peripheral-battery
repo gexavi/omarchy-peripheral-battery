@@ -25,11 +25,11 @@ import struct
 import sys
 import time
 
-VERSION = "1.4.0"
+VERSION = "1.4.1"
 DEFAULT_OUTPUT = "/run/peripheral-battery/status.json"
 # Devices that stop answering (asleep, switched off) keep their last reading
 # in the output, flagged offline, until they have been silent this long.
-FORGET_AFTER = 12 * 3600
+FORGET_AFTER = 48 * 3600
 # A hidraw node is left alone for this long after it appears. Right after a
 # hotplug (a USB KVM switching back, a dongle plugged in) some devices are
 # still initialising, and talking to them then is pointless at best.
@@ -559,13 +559,20 @@ def scan_kernel(skip_names):
             continue  # already read directly, with more detail
         driver = os.path.basename(os.path.realpath(os.path.join(parent, "driver")))
         serial = props.get("SERIAL_NUMBER") or hid.get("HID_UNIQ") or ""
-        devices.append({
+        device = {
             "key": f"kernel:{name}:{serial}" if serial else f"kernel:{name}",
             "name": name,
             "kind": device_kind(name, driver),
             "level": level,
             "state": {"Charging": "charging", "Full": "full"}.get(status, "discharging"),
-        })
+        }
+        # hid-logitech-hidpp derives the capacity of a voltage-only device
+        # (feature 0x1001) from the voltage, which reads the charger while
+        # charging: same caveat as Hidpp.battery.
+        if (driver == "logitech-hidpp-device" and "VOLTAGE_NOW" in props
+                and device["state"] == "charging"):
+            device["unmeasured"] = True
+        devices.append(device)
     return devices
 
 
@@ -598,8 +605,11 @@ def scan_node(node, probe):
     """
     if probe.get("ignored"):
         return []
+    # A negative age means the clock went back after the node was created
+    # (an NTP or RTC correction at boot): its creation time says nothing
+    # then, so do not hold the node back until the clock catches up.
     age = time.time() - node.created
-    if node.created and age < SETTLE_SECONDS:
+    if node.created and 0 <= age < SETTLE_SECONDS:
         return []
 
     if is_arctis_node(node):
@@ -664,7 +674,11 @@ def scan(previous=(), probe_state=None):
     for d in found:
         if d.pop("unmeasured", False):
             keep_last_level(d, previous, kernel)
-    return found + [d for d in kernel if d["name"] not in direct]
+    kernel_only = [d for d in kernel if d["name"] not in direct]
+    for d in kernel_only:
+        if d.pop("unmeasured", False):
+            keep_last_level(d, previous, [])
+    return found + kernel_only
 
 
 def keep_last_level(device, previous, kernel):
