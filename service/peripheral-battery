@@ -25,7 +25,7 @@ import struct
 import sys
 import time
 
-VERSION = "1.4.1"
+VERSION = "1.5.0"
 DEFAULT_OUTPUT = "/run/peripheral-battery/status.json"
 # Devices that stop answering (asleep, switched off) keep their last reading
 # in the output, flagged offline, until they have been silent this long.
@@ -145,10 +145,25 @@ RECEIVER_PIDS = {
     0xC539, 0xC53A, 0xC53D, 0xC53F, 0xC541, 0xC545, 0xC547, 0xC54D,  # Lightspeed
 }
 
+# Wireless headsets with their own dongle, from HeadsetControl. They speak
+# HID++ 2.0 on the direct address, on an interface whose descriptor does not
+# always use the usual HID++ usage page, and their dongle stays plugged in
+# while the headset is switched off: they are polled like receivers.
+LOGITECH_HEADSETS = {
+    0x0A66: "Logitech G533",
+    0x0A5C: "Logitech G633", 0x0A89: "Logitech G635",
+    0x0A5B: "Logitech G933", 0x0A87: "Logitech G935",
+    0x0AB5: "Logitech G733", 0x0AFE: "Logitech G733", 0x0B1F: "Logitech G733",
+    0x0AC4: "Logitech G535",
+    0x0AA7: "Logitech G PRO", 0x0AAA: "Logitech G PRO X", 0x0ABA: "Logitech G PRO X",
+    0x0AFB: "Logitech G PRO X 2", 0x0AFC: "Logitech G PRO X 2",
+}
+
 FEATURE_DEVICE_NAME = 0x0005
 FEATURE_BATTERY_STATUS = 0x1000
 FEATURE_BATTERY_VOLTAGE = 0x1001
 FEATURE_UNIFIED_BATTERY = 0x1004
+FEATURE_ADC_MEASUREMENT = 0x1F20
 
 # 0x0005 getDeviceType values, folded into what the bar widget displays.
 DEVICE_KINDS = {0: "keyboard", 2: "keyboard", 3: "mouse", 4: "mouse", 5: "mouse", 8: "headset"}
@@ -166,8 +181,8 @@ class HidppError(Exception):
 
 def is_hidpp_node(node):
     d = node.descriptor
-    return (node.vid == LOGITECH_VID and not node.is_virtual_child
-            and b"\x06\x00\xff" in d and b"\x85\x11" in d)
+    return (node.vid == LOGITECH_VID and not node.is_virtual_child and b"\x85\x11" in d
+            and (b"\x06\x00\xff" in d or node.pid in LOGITECH_HEADSETS))
 
 
 class Hidpp:
@@ -268,6 +283,17 @@ class Hidpp:
                 state = "full" if flags & 0x03 == 1 else "charging"
             return voltage_to_percent(millivolt), state, state != "charging"
 
+        # Headsets: battery voltage, as Solaar reads it. Flags bit 0 tells
+        # whether the reading is valid (clear when the dongle has no headset
+        # connected), bit 1 that it is charging.
+        idx = self.feature_index(device, FEATURE_ADC_MEASUREMENT)
+        if idx:
+            millivolt, flags = struct.unpack(">HB", self.request(device, idx, 0)[:3])
+            if not flags & 0x01:
+                raise HidppError("headset off")
+            state = "charging" if flags & 0x02 else "discharging"
+            return voltage_to_percent(millivolt), state, state != "charging"
+
         return None
 
 
@@ -290,10 +316,15 @@ def scan_hidpp(node):
     """
     devices = []
     note = None
+    headset = LOGITECH_HEADSETS.get(node.pid)
     with open(node.dev, "r+b", buffering=0) as f:
         hidpp = Hidpp(f.fileno(), short_reports=b"\x85\x10" in node.descriptor)
         if node.pid in RECEIVER_PIDS:
             role, indices = "receiver", range(1, 7)
+        elif headset:
+            # No ping: with the headset off, the dongle answers with an
+            # error that would pass it for a receiver.
+            role, indices = "headset", [DIRECT_DEVICE]
         else:
             # A receiver answers the direct address as an HID++ 1.0 device;
             # a device plugged in by cable or Bluetooth answers it as 2.0 or
@@ -311,7 +342,15 @@ def scan_hidpp(node):
                 if not version or version < 2:
                     continue  # empty slot, asleep, or legacy HID++ 1.0 device
             try:
-                name, kind = hidpp.name(index)
+                try:
+                    name, kind = hidpp.name(index)
+                except HidppError as e:
+                    if not headset:
+                        raise
+                    if e.args[0] == "timeout":
+                        note = "headset off"
+                        continue
+                    name, kind = None, None
                 battery = hidpp.battery(index)
             except HidppError as e:
                 note = f"HID++ error {e.args[0]}"
@@ -319,6 +358,8 @@ def scan_hidpp(node):
             if battery is None:
                 note = "no battery feature"
                 continue
+            if headset:
+                name, kind = name or headset, "headset"
             device = {
                 "key": f"hidpp:{node.pid:04x}:{index}:{name}",
                 "name": name or "Logitech device",
@@ -486,6 +527,84 @@ def scan_arctis(node):
 
 
 # --------------------------------------------------------------------------
+# HyperX wireless headsets
+#
+# Requests from HeadsetControl (lib/devices/hyperx_*.hpp), untested here.
+# Each reply is matched on the echo of the request, so an unrelated report
+# (a volume key, the dongle's own status) is never taken for an answer.
+
+HP_VID = 0x03F0
+
+
+def _hyperx_request(fd, request, echo, length=0, timeout=1.0):
+    os.write(fd, request)
+    return read_matching(
+        fd, lambda r: r if r.startswith(echo) and len(r) >= max(length, len(echo) + 1) else None,
+        timeout)
+
+
+def _read_cloud_2_wireless(fd):
+    # Report 06, "ff bb" then the command: 02 = battery (charge in percent in
+    # byte 7), 03 = charging (byte 4 = 1). Requests padded to 52 bytes.
+    level = _hyperx_request(fd, b"\x06\xff\xbb\x02".ljust(52, b"\0"), b"\x06\xff\xbb\x02", 8)
+    if level is None or not 0 < level[7] <= 100:
+        return None  # headset off: the dongle reports nothing or 0 %
+    charging = _hyperx_request(fd, b"\x06\xff\xbb\x03".ljust(52, b"\0"), b"\x06\xff\xbb\x03", 5)
+    return level[7], "charging" if charging is not None and charging[4] == 1 else "discharging", True
+
+
+def _read_cloud_alpha_wireless(fd):
+    # Report 21, "bb" then the command: 03 = connection (byte 3 = 1: no
+    # headset), 0c = charging (byte 3 = 1), 0b = charge in percent (byte 3).
+    # While charging the headset gives no level: the last one is kept, or
+    # the level is published as null when there is none.
+    def ask(command):
+        req = bytes([0x21, 0xBB, command])
+        return _hyperx_request(fd, req.ljust(31, b"\0"), req, 4)
+    connection = ask(0x03)
+    if connection is None or connection[3] == 0x01:
+        return None
+    charging = ask(0x0C)
+    if charging is not None and charging[3] == 0x01:
+        return None, "charging", False
+    level = ask(0x0B)
+    if level is None or not 0 < level[3] <= 100:
+        return None
+    return level[3], "discharging", True
+
+
+# product id -> (name, report id the interface must carry, reader)
+HYPERX_MODELS = {
+    0x0696: ("HyperX Cloud II Wireless", 0x06, _read_cloud_2_wireless),
+    0x018B: ("HyperX Cloud II Wireless", 0x06, _read_cloud_2_wireless),
+    0x098D: ("HyperX Cloud Alpha Wireless", 0x21, _read_cloud_alpha_wireless),
+}
+
+
+def is_hyperx_node(node):
+    model = HYPERX_MODELS.get(node.pid) if node.vid == HP_VID else None
+    return model is not None and bytes([0x85, model[1]]) in node.descriptor
+
+
+def scan_hyperx(node):
+    name, _, reader = HYPERX_MODELS[node.pid]
+    with open(node.dev, "r+b", buffering=0) as f:
+        reading = reader(f.fileno())
+    if reading is None:
+        return []
+    device = {
+        "key": f"hyperx:{node.pid:04x}",
+        "name": name,
+        "kind": "headset",
+        "level": reading[0],
+        "state": reading[1],
+    }
+    if not reading[2]:
+        device["unmeasured"] = True
+    return [device]
+
+
+# --------------------------------------------------------------------------
 # Batteries the kernel already exposes
 #
 # Several kernel drivers publish a device battery under
@@ -528,8 +647,9 @@ def device_kind(name, driver):
     return "other"
 
 
-def scan_kernel(skip_names):
-    """Device batteries from sysfs, except those named in skip_names."""
+def scan_kernel(skip_names, skip_ids=()):
+    """Device batteries from sysfs, except those named in skip_names or
+    whose HID device has a (vendor, product) id in skip_ids."""
     try:
         entries = sorted(os.listdir(POWER_SUPPLY_DIR))
     except OSError:
@@ -554,6 +674,9 @@ def scan_kernel(skip_names):
             continue
         parent = os.path.realpath(os.path.join(base, "device"))
         hid = _uevent(os.path.join(parent, "uevent"))
+        hid_id = re.match(r"^[0-9A-F]{4}:([0-9A-F]{8}):([0-9A-F]{8})$", hid.get("HID_ID", ""))
+        if hid_id and (int(hid_id.group(1), 16), int(hid_id.group(2), 16)) in skip_ids:
+            continue  # this very device was read directly
         name = (props.get("MODEL_NAME") or hid.get("HID_NAME") or entry).strip()
         if name in skip_names:
             continue  # already read directly, with more detail
@@ -612,10 +735,12 @@ def scan_node(node, probe):
     if node.created and 0 <= age < SETTLE_SECONDS:
         return []
 
-    if is_arctis_node(node):
-        devices, role, note = scan_arctis(node), "arctis", None
-        if not devices:
-            note = "headset off or no reply"
+    if is_arctis_node(node) or is_hyperx_node(node):
+        if is_arctis_node(node):
+            devices, role = scan_arctis(node), "arctis"
+        else:
+            devices, role = scan_hyperx(node), "hyperx"
+        note = None if devices else "headset off or no reply"
     else:
         devices, role, note = scan_hidpp(node)
 
@@ -623,12 +748,12 @@ def scan_node(node, probe):
         probe["empty"] = 0
         probe["read"] = True
         if not probe.get("logged"):
-            names = ", ".join(f"{d['name']} {d['level']}%" for d in devices)
+            names = ", ".join(f"{d['name']} {d['level'] if d['level'] is not None else '?'}%" for d in devices)
             log(5, f"{node.describe()}: {role}, read {names}")
             probe["logged"] = True
         return devices
 
-    # Receivers stay polled: their devices go to sleep and wake up. Arctis
+    # Receivers stay polled: their devices go to sleep and wake up. Headset
     # dongles too: the headset is often just switched off.
     if role != "direct":
         if not probe.get("logged"):
@@ -653,15 +778,23 @@ def scan(previous=(), probe_state=None):
         probe_state = {}
     found = []
     seen = set()
+    read_ids = set()
     for node in hidraw_nodes():
-        if not (is_hidpp_node(node) or is_arctis_node(node)):
+        if not (is_hidpp_node(node) or is_arctis_node(node) or is_hyperx_node(node)):
             continue
         seen.add(node.identity)
         probe = probe_state.setdefault(node.identity, {})
         try:
-            found += scan_node(node, probe)
+            devices = scan_node(node, probe)
         except OSError as e:
             log(4, f"{node.describe()}: {e}")
+            continue
+        found += devices
+        # A dongle the kernel also has a driver for (Arctis 1 and 9, G935)
+        # shows there under another name: skip it by id. Not for receivers,
+        # whose devices the kernel lists under their own ids.
+        if devices and node.pid not in RECEIVER_PIDS:
+            read_ids.add((node.vid, node.pid))
     # Forget nodes that are gone, so a reconnected device starts afresh.
     for identity in list(probe_state):
         if identity not in seen:
@@ -670,7 +803,7 @@ def scan(previous=(), probe_state=None):
     # those read directly before, so that a sleeping mouse is not shown twice.
     direct = {d["name"] for d in list(found) + list(previous)
               if not str(d.get("key", "")).startswith("kernel:")}
-    kernel = scan_kernel(set())
+    kernel = scan_kernel(set(), read_ids)
     for d in found:
         if d.pop("unmeasured", False):
             keep_last_level(d, previous, kernel)
@@ -688,7 +821,7 @@ def keep_last_level(device, previous, kernel):
     connection (receiver or cable) it was read through, and records when it
     was measured. Without one, falls back on the kernel's figure.
     """
-    earlier = [d for d in previous if d.get("name") == device["name"] and "level" in d]
+    earlier = [d for d in previous if d.get("name") == device["name"] and d.get("level") is not None]
     if earlier:
         last = max(earlier, key=lambda d: d.get("measured", d.get("seen", 0)))
         device["level"] = last["level"]

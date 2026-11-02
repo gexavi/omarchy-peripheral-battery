@@ -7,7 +7,7 @@ does, what limits it, and what it protects you from.
 
 | Part | Runs as | Can access |
 |---|---|---|
-| `BarWidget.qml` | Your user, inside `omarchy-shell` | Reads `/run/peripheral-battery/status.json`. That is all it does. |
+| `BarWidget.qml` | Your user, inside `omarchy-shell` | Reads `/run/peripheral-battery/status.json`, and the Bluetooth device batteries UPower already publishes on D-Bus to every session. |
 | `peripheral-battery` (service) | root, sandboxed, no capabilities | `/dev/hidraw*` read/write, `/sys` read-only, writes `/run/peripheral-battery/` |
 
 The widget never talks to the devices, starts no process and needs no
@@ -52,14 +52,19 @@ Only read requests. It never writes a setting.
 | `0x1004` Unified battery | 1 `getStatus` | Charge and charging state |
 | `0x1000` Battery status | 0 `getLevel` | Same, older devices |
 | `0x1001` Battery voltage | 0 `getVoltage` | Same, from the voltage (converted to %) |
+| `0x1F20` ADC measurement | 0 `getMeasurement` | Same, headsets |
 
 Only receivers get their slots 1–6 pinged. A node is a receiver when its
 product id is a known Logitech receiver (Unifying, Bolt, Nano, Lightspeed) or
 when it answers a ping on the direct address `0xFF` with an HID++ 1.0 error.
 Devices connected by cable or Bluetooth use the direct address `0xFF`.
 
-Other Logitech nodes that carry the HID++ report (headset dongles, for
-example) are handled carefully:
+Logitech headset dongles with a known product id (G533, G535, G633, G635,
+G733, G933, G935, G PRO series, list from HeadsetControl) are addressed on
+`0xFF` without a ping, and are always polled, since the headset is often just
+switched off.
+
+Other Logitech nodes that carry the HID++ report are handled carefully:
 
 - A hidraw node is left alone for its first 60 seconds, so a device that has
   just been plugged in, or reconnected by a USB KVM switch, can finish
@@ -85,6 +90,15 @@ interface that carries it, taken from HeadsetControl. No other message is sent.
 
 The replies hold the charge, a charging flag and a "headset off" flag. See
 `ARCTIS_MODELS` in `service/peripheral-battery` for the byte layout of each.
+
+**HyperX** (vendor `03f0`): status requests taken from HeadsetControl, on the
+interface that carries the report id they use. Each reply is matched on the
+echo of its request.
+
+| Models | Requests |
+|---|---|
+| Cloud II Wireless | `06 ff bb 02` (charge), `06 ff bb 03` (charging), padded to 52 bytes |
+| Cloud Alpha Wireless | `21 bb 03` (connection), `21 bb 0c` (charging), `21 bb 0b` (charge), padded to 31 bytes |
 
 **Kernel batteries** (`/sys/class/power_supply`, entries with
 `SCOPE=Device`): read-only attributes. The service sends nothing to these

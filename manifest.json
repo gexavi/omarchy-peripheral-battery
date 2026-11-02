@@ -2,11 +2,11 @@
   "schemaVersion": 1,
   "id": "gexavi.peripheral-battery",
   "name": "Wireless Peripheral Battery",
-  "version": "1.4.1",
+  "version": "1.5.0",
   "author": "gexavi",
   "license": "MIT",
   "homepage": "https://github.com/gexavi/omarchy-peripheral-battery",
-  "description": "Battery levels of wireless Logitech (HID++) devices, SteelSeries Arctis headsets, and any device battery the kernel reports (game controllers, Apple Magic devices…), read by a small sandboxed system service. No Solaar or headsetcontrol needed.",
+  "description": "Battery levels of wireless Logitech (HID++) devices and headsets, SteelSeries Arctis and HyperX headsets, Bluetooth headphones known to UPower, and any device battery the kernel reports (game controllers, Corsair Void, Apple Magic devices…), read by a small sandboxed system service. No Solaar or headsetcontrol needed.",
   "kinds": [
     "bar-widget"
   ],

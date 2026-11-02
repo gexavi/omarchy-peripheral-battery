@@ -26,8 +26,10 @@ The usual fix is to install Solaar and HeadsetControl, which give your user
 account raw access to the devices (see [why that matters](#why-a-root-service)).
 
 This plugin reads the devices directly and covers those gaps. It needs no extra
-package, and all your session receives is the percentages. If UPower already
-shows all your devices, a UPower-based widget is simpler and needs no setup.
+package, and all your session receives is the percentages. Bluetooth devices
+whose battery only BlueZ knows (headphones, earbuds) are taken from UPower, so
+they show up too. If UPower already shows all your devices, a UPower-based
+widget is simpler and needs no setup.
 
 ## How it works
 
@@ -47,8 +49,9 @@ The plugin comes in two parts:
    `/run/peripheral-battery/status.json`, and exits. Nothing stays resident: a
    run uses about 60 ms of CPU and 8 MB of memory, and lasts under a second,
    mostly spent waiting for the radio replies.
-2. **The bar widget** (`BarWidget.qml`). It reads that JSON file and nothing
-   else. It starts no process and needs no permission.
+2. **The bar widget** (`BarWidget.qml`). It reads that JSON file, and adds
+   the Bluetooth devices UPower knows through BlueZ. It starts no process and
+   needs no permission.
 
 ### Why a root service?
 
@@ -75,11 +78,15 @@ to the devices, the sandbox settings, and what is and is not protected.
 | SteelSeries Arctis 7 (2019) | USB dongle `1038:12ad` | Tested |
 | Other Logitech HID++ 2.0 devices with battery feature `0x1000`, `0x1001` or `0x1004` (Unifying, Bolt, Lightspeed, cable or Bluetooth) | | Should work, untested |
 | SteelSeries Arctis 7 (2017), 1 Wireless, 7P, 7X, 9, 7+, 7P+, 7X+, Nova 3P/3X Wireless, Nova 5/5X, Nova 7/7X/7P (all revisions), Nova Pro Wireless | USB dongle or base station | Should work, untested (requests from HeadsetControl) |
+| Logitech G533, G535, G633, G635, G733, G933, G935, G PRO, G PRO X, G PRO X 2 headsets | USB dongle | Should work, untested (HID++ feature `0x1F20`, as Solaar reads it) |
+| HyperX Cloud II Wireless, Cloud Alpha Wireless | USB dongle | Should work, untested (requests from HeadsetControl) |
+| Corsair Void wireless headsets (Void, Void Pro, Void Elite…) | USB dongle | Should work, untested (kernel `hid-corsair-void` driver) |
 | Device batteries reported by the kernel: PlayStation, Xbox (xpadneo), Switch and Steam controllers, Wiimotes, Apple Magic devices, HID devices reporting a battery, Logitech HID++ 1.0 through `hid-logitech-hidpp` | Any | Should work, untested |
-| Bluetooth headphones and other devices whose battery only BlueZ knows | | Not supported, use a UPower widget |
+| Bluetooth headphones, earbuds and other devices whose battery only BlueZ knows | Bluetooth | Should work, untested (read from UPower by the widget, no service needed) |
 
-Devices the kernel reports are matched by name with the ones read directly,
-so a Logitech device appears once, with the more detailed direct reading.
+Devices the kernel reports are matched by name and by USB id with the ones
+read directly, so a device appears once, with the more detailed direct
+reading. Bluetooth devices from UPower are matched by name.
 
 If your device works, or does not, please open an issue with its name and
 the output of `cat /run/peripheral-battery/status.json`.
@@ -213,12 +220,15 @@ cat /run/peripheral-battery/status.json         # what the widget sees
 | Readings dimmed | Not updated for 10 minutes: the timer is stopped |
 | A device is missing | It was never seen awake, or it is not supported. A device just plugged in (or switched back to by a KVM) is first read after 60 seconds |
 | A kernel-reported device shows 󰂄 | Its kind (mouse, controller…) could not be told from its name or driver |
+| A device shows `?⚡` | It is charging and gives no level while charging (HyperX Cloud Alpha Wireless), and no earlier reading exists |
+| A Bluetooth device is missing | UPower does not list it: check `upower -d`. Only devices whose battery comes from BlueZ are taken from UPower |
 
 ## Credits
 
 The HID++ 2.0 battery features and the Li-ion voltage-to-percent curve
-come from [Solaar](https://github.com/pwr-Solaar/Solaar). The Arctis 7 status
-status requests come from [HeadsetControl](https://github.com/Sapd/HeadsetControl).
+come from [Solaar](https://github.com/pwr-Solaar/Solaar). The Arctis and
+HyperX status requests and the Logitech headset product ids come from
+[HeadsetControl](https://github.com/Sapd/HeadsetControl).
 This plugin reimplements the few requests it needs and contains no code from
 either project.
 
