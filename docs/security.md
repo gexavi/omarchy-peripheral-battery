@@ -91,7 +91,8 @@ interface that carries it, taken from HeadsetControl. No other message is sent.
 The replies hold the charge, a charging flag and a "headset off" flag. See
 `ARCTIS_MODELS` in `service/peripheral-battery` for the byte layout of each.
 
-**HyperX** (vendor `03f0`): status requests taken from HeadsetControl, on the
+**HyperX** (vendor `03f0`): status requests taken from HeadsetControl (and,
+for the Cloud III Wireless, HyperHeadset), on the
 interface that carries the report id they use. Each reply is matched on the
 echo of its request.
 
@@ -99,6 +100,7 @@ echo of its request.
 |---|---|
 | Cloud II Wireless | `06 ff bb 02` (charge), `06 ff bb 03` (charging), padded to 52 bytes |
 | Cloud Alpha Wireless | `21 bb 03` (connection), `21 bb 0c` (charging), `21 bb 0b` (charge), padded to 31 bytes |
+| Cloud III Wireless | `66 82` (connection), `66 89` (charge), `66 8a` (charging), padded to 62 bytes |
 
 **Kernel batteries** (`/sys/class/power_supply`, entries with
 `SCOPE=Device`): read-only attributes. The service sends nothing to these

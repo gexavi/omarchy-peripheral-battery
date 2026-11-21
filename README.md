@@ -76,6 +76,7 @@ to the devices, the sandbox settings, and what is and is not protected.
 | Logitech G502 Lightspeed | Lightspeed receiver `046d:c539` | Tested |
 | Logitech G915 TKL | Lightspeed receiver `046d:c545` | Tested |
 | SteelSeries Arctis 7 (2019) | USB dongle `1038:12ad` | Tested |
+| HyperX Cloud III Wireless | USB dongle `03f0:05b7` (also `03f0:0c9d`) | Tested (requests from HyperHeadset) |
 | Other Logitech HID++ 2.0 devices with battery feature `0x1000`, `0x1001` or `0x1004` (Unifying, Bolt, Lightspeed, cable or Bluetooth) | | Should work, untested |
 | SteelSeries Arctis 7 (2017), 1 Wireless, 7P, 7X, 9, 7+, 7P+, 7X+, Nova 3P/3X Wireless, Nova 5/5X, Nova 7/7X/7P (all revisions), Nova Pro Wireless | USB dongle or base station | Should work, untested (requests from HeadsetControl) |
 | Logitech G533, G535, G633, G635, G733, G933, G935, G PRO, G PRO X, G PRO X 2 headsets | USB dongle | Should work, untested (HID++ feature `0x1F20`, as Solaar reads it) |
@@ -228,9 +229,10 @@ cat /run/peripheral-battery/status.json         # what the widget sees
 The HID++ 2.0 battery features and the Li-ion voltage-to-percent curve
 come from [Solaar](https://github.com/pwr-Solaar/Solaar). The Arctis and
 HyperX status requests and the Logitech headset product ids come from
-[HeadsetControl](https://github.com/Sapd/HeadsetControl).
+[HeadsetControl](https://github.com/Sapd/HeadsetControl). The HyperX Cloud III
+Wireless requests come from [HyperHeadset](https://github.com/LennardKittner/HyperHeadset).
 This plugin reimplements the few requests it needs and contains no code from
-either project.
+any of these projects.
 
 ## License
 

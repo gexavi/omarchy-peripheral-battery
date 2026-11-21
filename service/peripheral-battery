@@ -11,6 +11,8 @@ Supported:
     or connected directly, via features 0x1004, 0x1000 or 0x1001.
   * SteelSeries Arctis wireless headsets (Arctis 1, 7, 7+, 9, Nova 3P/5/7,
     Nova Pro Wireless), with the status requests HeadsetControl uses.
+  * HyperX Cloud II, Cloud III and Cloud Alpha Wireless headsets, with the
+    status requests HeadsetControl and HyperHeadset use.
   * Any device battery the kernel exposes in /sys/class/power_supply
     (game controllers, Apple Magic devices, Logitech HID++ 1.0...).
 
@@ -529,7 +531,8 @@ def scan_arctis(node):
 # --------------------------------------------------------------------------
 # HyperX wireless headsets
 #
-# Requests from HeadsetControl (lib/devices/hyperx_*.hpp), untested here.
+# Requests from HeadsetControl (lib/devices/hyperx_*.hpp) and, for the
+# Cloud III Wireless, HyperHeadset; only the Cloud III Wireless is tested.
 # Each reply is matched on the echo of the request, so an unrelated report
 # (a volume key, the dongle's own status) is never taken for an answer.
 
@@ -573,11 +576,33 @@ def _read_cloud_alpha_wireless(fd):
     return level[3], "discharging", True
 
 
+def _read_cloud_3_wireless(fd):
+    # Requests from HyperHeadset (src/devices/cloud_iii_wireless.rs). Report
+    # 66, then the command, padded to 62 bytes: 82 = connection (byte 2 = 1:
+    # headset connected), 8a = charging (byte 2: 0 = no, 1 = charging,
+    # 2 = full), 89 = battery (bytes 2-3 both 0: no reading, byte 4: charge
+    # in percent).
+    def ask(command):
+        req = bytes([0x66, command])
+        return _hyperx_request(fd, req.ljust(62, b"\0"), req, 5)
+    connection = ask(0x82)
+    if connection is None or connection[2] != 0x01:
+        return None
+    level = ask(0x89)
+    if level is None or (level[2] == 0 and level[3] == 0) or not 0 < level[4] <= 100:
+        return None
+    charging = ask(0x8A)
+    state = {1: "charging", 2: "full"}.get(charging[2] if charging is not None else 0, "discharging")
+    return level[4], state, True
+
+
 # product id -> (name, report id the interface must carry, reader)
 HYPERX_MODELS = {
     0x0696: ("HyperX Cloud II Wireless", 0x06, _read_cloud_2_wireless),
     0x018B: ("HyperX Cloud II Wireless", 0x06, _read_cloud_2_wireless),
     0x098D: ("HyperX Cloud Alpha Wireless", 0x21, _read_cloud_alpha_wireless),
+    0x05B7: ("HyperX Cloud III Wireless", 0x66, _read_cloud_3_wireless), # Cloud 3 could be either of these depending on variant
+    0x0C9D: ("HyperX Cloud III Wireless", 0x66, _read_cloud_3_wireless),
 }
 
 
